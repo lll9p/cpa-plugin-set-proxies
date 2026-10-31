@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "plugins": [
+    {
+      "id": "cpa-plugin-set-proxies",
+      "name": "Webshare Proxy Assignment",
+      "description": "Assigns working Webshare SOCKS5 proxies to file-backed CPA credentials, with an embedded management page and server-side settings and tasks.",
+      "author": "lll9p",
+      "repository": "https://github.com/lll9p/cpa-plugin-set-proxies",
+      "license": "MIT",
+      "tags": ["Management", "Proxies"]
+    }
+  ]
+}

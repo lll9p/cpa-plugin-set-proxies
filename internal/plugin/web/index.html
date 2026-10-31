@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="referrer" content="no-referrer"><title>代理分配 · CPA</title><style>/*STYLE*/</style></head>
+<body><main id="cpa-set-proxies" class="csp-root" data-theme="light">
+<div class="csp-toolbar" role="region" aria-label="任务状态与操作">
+  <div class="csp-status-bar">
+    <p id="status" class="csp-status-badge csp-phase-unauth" role="status" aria-live="polite">正在连接管理面板</p>
+    <p id="configured" class="csp-meta"></p>
+  </div>
+  <div class="line csp-toolbar-actions">
+    <button id="scan" class="csp-btn csp-btn-primary" type="button" disabled>扫描并预览</button>
+    <button id="apply" class="csp-btn csp-btn-accent" type="button" disabled>应用变更</button>
+    <button id="cancel" class="csp-btn csp-btn-danger-ghost" type="button" disabled>取消任务</button>
+    <button id="refresh" class="csp-btn csp-btn-secondary" type="button" disabled>刷新</button>
+  </div>
+</div>
+<details id="settings" class="csp-card">
+  <summary class="csp-settings-toggle" title="扫描使用已保存设置"><h2 id="settingsTitle">设置</h2></summary>
+  <div class="csp-card-header">
+    <p class="csp-meta">管理密码：<span id="keyStatus">待读取</span></p>
+    <div class="line csp-header-actions">
+      <button id="editKey" class="csp-btn csp-btn-ghost" type="button" disabled>更换密码</button>
+      <button id="save" class="csp-btn csp-btn-secondary" type="button" disabled>保存设置</button>
+      <button id="clearURL" class="csp-btn csp-btn-ghost" type="button" disabled>清除链接</button>
+    </div>
+  </div>
+  <div class="csp-grid">
+    <div id="keyEditor" class="csp-field" hidden>
+      <label for="managementKey">CPA 管理密码</label>
+      <input id="managementKey" type="password" autocomplete="new-password" placeholder="输入 CPA 管理密码" disabled>
+      <div class="line">
+        <button id="saveKey" class="csp-btn csp-btn-secondary" type="button" disabled>保存密码</button>
+        <button id="cancelKey" class="csp-btn csp-btn-ghost" type="button" disabled>取消</button>
+      </div>
+    </div>
+    <div class="csp-field">
+      <label for="url">Webshare 下载链接</label>
+      <input id="url" type="password" autocomplete="off" placeholder="留空保留后端已保存的链接" disabled>
+    </div>
+    <div class="csp-field">
+      <label for="excludes">排除的凭证文件名（每行一个）</label>
+      <textarea id="excludes" rows="2" placeholder="example.json" disabled></textarea>
+    </div>
+  </div>
+</details>
+<section class="csp-card" aria-labelledby="previewTitle">
+  <div class="csp-card-header">
+    <h2 id="previewTitle">分配预览</h2>
+    <p id="summary" class="csp-summary"></p>
+  </div>
+  <progress id="progress" value="0" max="1" aria-label="任务进度"></progress>
+  <p id="empty" class="csp-empty">扫描后显示分配预览</p>
+  <div class="table" tabindex="0" role="region" aria-label="扫描预览，可横向滚动">
+    <table>
+      <caption class="csp-sr-only">凭证代理分配预览</caption>
+      <thead><tr><th scope="col">凭证</th><th scope="col">当前代理</th><th scope="col">新代理</th><th scope="col">操作</th><th scope="col">原因</th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+  <div id="resultPanel" class="csp-results-panel" hidden>
+    <div class="csp-results-header">
+      <h3>应用结果</h3>
+      <p id="counts" aria-live="polite">尚未应用</p>
+    </div>
+    <ul id="results"></ul>
+  </div>
+</section>
+<dialog id="confirm" aria-labelledby="confirmTitle" aria-describedby="confirmDescription">
+  <h2 id="confirmTitle">确认写入代理？</h2>
+  <p id="confirmDescription">关闭页面或退出不会中止任务。取消仅停止后续写入，已完成的变更不会回滚。</p>
+  <div class="line csp-dialog-actions">
+    <button id="confirmNo" class="csp-btn csp-btn-secondary" type="button" autofocus>返回预览</button>
+    <button id="confirmYes" class="csp-btn csp-btn-primary" type="button">确认应用</button>
+  </div>
+</dialog>
+</main><script>/*APP*/</script></body></html>

@@ -1,0 +1,97 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    uses: ./.github/workflows/ci.yml
+
+  build:
+    name: Build ${{ matrix.os }}-${{ matrix.arch }}
+    needs: check
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: linux, arch: amd64, runner: ubuntu-24.04, ext: so, image: quay.io/pypa/manylinux2014_x86_64 }
+          - { os: linux, arch: arm64, runner: ubuntu-24.04-arm, ext: so, image: quay.io/pypa/manylinux2014_aarch64 }
+          - { os: darwin, arch: amd64, runner: macos-15-intel, ext: dylib }
+          - { os: darwin, arch: arm64, runner: macos-15, ext: dylib }
+          - { os: windows, arch: amd64, runner: windows-2025, ext: dll }
+    steps:
+      - uses: actions/checkout@v6
+      - name: Check tag matches plugin version
+        shell: bash
+        run: |
+          version=$(sed -n 's/^const pluginVersion = "\(.*\)"/\1/p' internal/plugin/plugin.go)
+          test "$version" = "${GITHUB_REF_NAME#v}"
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      # manylinux2014 (glibc 2.17) keeps the plugin loadable on older Linux distributions.
+      - name: Build Linux plugin
+        if: matrix.os == 'linux'
+        run: |
+          mkdir -p dist
+          docker run --rm --user "$(id -u):$(id -g)" \
+            -v "$PWD:/src" -w /src -v "$(go env GOROOT):/opt/go:ro" \
+            -e GOROOT=/opt/go -e HOME=/tmp -e GOFLAGS=-buildvcs=false -e CGO_ENABLED=1 \
+            ${{ matrix.image }} \
+            /opt/go/bin/go build -trimpath -ldflags="-s -w" -buildmode=c-shared -o dist/cpa-plugin-set-proxies.so ./cmd/cpa-plugin-set-proxies
+
+      - name: Build plugin
+        if: matrix.os != 'linux'
+        shell: bash
+        env:
+          CGO_ENABLED: "1"
+        run: |
+          mkdir -p dist
+          go build -trimpath -ldflags="-s -w" -buildmode=c-shared -o dist/cpa-plugin-set-proxies.${{ matrix.ext }} ./cmd/cpa-plugin-set-proxies
+
+      # The CPA plugin store needs <id>_<version>_<os>_<arch>.zip with the library at the zip root.
+      - name: Package
+        if: matrix.os != 'windows'
+        run: |
+          name="cpa-plugin-set-proxies_${GITHUB_REF_NAME#v}_${{ matrix.os }}_${{ matrix.arch }}"
+          tar -czf "$name.tar.gz" -C dist cpa-plugin-set-proxies.${{ matrix.ext }}
+          zip -j "$name.zip" dist/cpa-plugin-set-proxies.${{ matrix.ext }}
+
+      - name: Package
+        if: matrix.os == 'windows'
+        shell: pwsh
+        run: Compress-Archive -Path dist/cpa-plugin-set-proxies.dll -DestinationPath "cpa-plugin-set-proxies_$($env:GITHUB_REF_NAME.TrimStart('v'))_windows_amd64.zip"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.os }}-${{ matrix.arch }}
+          path: cpa-plugin-set-proxies_*_${{ matrix.os }}_${{ matrix.arch }}.*
+          if-no-files-found: error
+
+  release:
+    name: Publish
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          path: assets
+          merge-multiple: true
+      - name: Generate checksums
+        working-directory: assets
+        run: sha256sum * > checksums.txt
+      - uses: softprops/action-gh-release@v3
+        with:
+          files: assets/*
+          generate_release_notes: true

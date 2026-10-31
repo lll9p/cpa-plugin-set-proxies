@@ -1,0 +1,8 @@
+plugins:
+  enabled: true
+  dir: plugins
+  store-sources:
+    - https://raw.githubusercontent.com/lll9p/cpa-plugin-set-proxies/master/registry.json
+  configs:
+    cpa-plugin-set-proxies:
+      enabled: true
