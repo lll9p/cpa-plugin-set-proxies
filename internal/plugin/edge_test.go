@@ -64,12 +64,25 @@ func TestNoAliveAndDedup(t *testing.T) {
 	if b.s.Phase != "failed" || b.s.PlanID != "" {
 		t.Fatal("dead nodes generated plan")
 	}
+	for _, probe := range b.s.Probes {
+		if !probe.Checked || probe.Alive || probe.Attempts != 3 || probe.Category != "unknown" {
+			t.Fatalf("incomplete failed probe: %+v", probe)
+		}
+	}
 	b.probe = func(context.Context, node) bool { return true }
 	n := node{"host", "1080", "u", "p"}
 	b.fetch = func(context.Context, string) ([]node, error) { return []node{n, n}, nil }
 	scan(t, b)
 	if b.s.Summary.Alive != 1 {
 		t.Fatal("endpoint not deduplicated")
+	}
+	if len(b.s.Probes) != 2 {
+		t.Fatal("duplicate endpoints lost their individual probe results")
+	}
+	for _, probe := range b.s.Probes {
+		if !probe.Checked || !probe.Alive || probe.Attempts != 1 || probe.Endpoint != n.endpoint() {
+			t.Fatalf("invalid successful probe: %+v", probe)
+		}
 	}
 }
 func TestProbeCancelled(t *testing.T) {

@@ -55,13 +55,16 @@ This version targets CPA's current C ABI 1 / RPC schema 6, with the existing v8 
 1. Open **代理分配** from your already authenticated CPA management frontend. There is no separate plugin login or logout. The plugin reads the panel's existing `cli-proxy-auth` login record to authenticate its own same-origin requests. It never writes browser storage.
 2. On first setup, enter the **CPA 管理密码**, Webshare download URL, and excluded credential filenames, then choose **保存设置**. Settings are persisted at `data/cpa-plugin-set-proxies/settings.json`, relative to CPA's working directory. The backend validates an explicitly supplied password with a read-only CPA request before saving it. Settings and serialized snapshots are limited to 64 KiB. No old plugin configuration or `WEBSHARE_URL` is read, imported, or migrated.
 3. Choose **扫描并预览**. The backend downloads the saved proxy list, checks up to 24 proxies concurrently, and generates a preview without modifying credentials.
-4. Review the proposed assignments, then confirm **应用变更**. Application runs in the backend: closing the browser or logging out of the panel does not stop it. Reopen the plugin from the panel to see its current progress.
+4. Review **待变更** (the default view), or switch to **全部 / 保留 / 跳过** and search by credential filename. Filters only affect the display: **应用变更 · N** always applies the entire pending plan, as stated in the confirmation dialog.
+5. Use **排除 / 取消排除** on a file-backed credential to update its saved exclusion. The old preview remains visible as **上次预览**, but its plan is invalidated. Adjust other exclusions, then scan again. These actions never submit an unfinished URL or password edit, and preserve other exclusion drafts.
+6. Expand **代理检测明细** to inspect each proxy's availability, connection time, attempts, and failure category. Results retain download order; unfinished checks are not failures. Times describe the successful or last failed SOCKS + TLS attempt, not all retries or a ping. Addresses never include proxy credentials. If all checks fail, the section opens automatically.
+7. Confirm **应用变更**. Application runs in the backend: closing the browser or logging out of the panel does not stop it. Reopen the plugin from the panel to see its current progress.
 
 The settings section shows **管理密码：已设置 / 未设置**. With a saved password, its input stays hidden. **更换密码** opens it; **保存密码** updates only the backend password, preserving the URL, exclusions, and unsaved page drafts. An omitted or blank `management_key` preserves the saved value. Ordinary saves and incoming Authorization headers never rotate it. Failed validation keeps the old settings and preview. Saved passwords are never returned to the page; successfully submitted inputs are cleared. A backend CPA authentication failure prompts a password update without disconnecting the management page. Manager Plus users should enter the real upstream CPA management password, not Manager Plus's potentially different admin password.
 
 The backend performs a native credential check before each item and sends only `name` and `proxy_url` to `PATCH /v8/management/credentials/fields`. It never writes entire credential files. Cancellation stops subsequent items but does not abort an in-flight PATCH or roll back completed updates. An uncertain outcome is reported as unknown and is never automatically retried; scan again to inspect the actual state.
 
-Plans expire after ten minutes. Scanning again, cancelling, disabling, or reconfiguring the plugin invalidates the previous plan. Jobs and results exist only in memory: restarting CPA discards them, invalidates plans, and never resumes unfinished work. Saved settings remain; there is no task history or database.
+Plans expire after ten minutes. Saving settings, scanning again, cancelling, disabling, or reconfiguring the plugin invalidates the previous plan. Jobs and results exist only in memory: restarting CPA discards them, invalidates plans, and never resumes unfinished work. Saved settings remain; there is no task history or database.
 
 ## Management frontend authentication
 
@@ -159,18 +162,19 @@ The `v*` tag workflow runs these checks again, then builds the following native 
 | macOS | amd64, arm64 | `cpa-plugin-set-proxies.dylib` |
 | Windows | amd64 | `cpa-plugin-set-proxies.dll` |
 
-For version `1.0.0`, the Linux amd64 store asset is `cpa-plugin-set-proxies_1.0.0_linux_amd64.zip`, containing only `cpa-plugin-set-proxies.so` at the ZIP root. Other platforms follow the same `<id>_<version>_<os>_<arch>.zip` convention. The workflow publishes these ZIPs, optional Unix tarballs, and a single `checksums.txt` containing SHA-256 hashes of the release archives.
+The Linux amd64 store asset is `cpa-plugin-set-proxies_<version>_linux_amd64.zip`, containing only `cpa-plugin-set-proxies.so` at the ZIP root. Other platforms follow the same `<id>_<version>_<os>_<arch>.zip` convention. The workflow publishes these ZIPs, optional Unix tarballs, and a single `checksums.txt` containing SHA-256 hashes of the release archives.
 
 To publish:
 
-1. Set `pluginVersion` in `internal/plugin/plugin.go` to the intended version (currently `1.0.0`).
+1. Update `pluginVersion` in `internal/plugin/plugin.go`, the single source of the plugin version. No version change is needed in `registry.json`, the workflow, or this README.
 2. Commit the source, `registry.json`, and `.github/workflows/` changes. Push the branch and let CI pass.
-3. Push a matching tag. For the current version:
+3. Read that version and push its matching tag:
 
    ```bash
+   version=$(sed -n 's/^const pluginVersion = "\(.*\)"/\1/p' internal/plugin/plugin.go)
    git push origin master
-   git tag v1.0.0
-   git push origin v1.0.0
+   git tag "v$version"
+   git push origin "v$version"
    ```
 
 4. Wait for the **Release** workflow to finish and confirm that the GitHub Release contains all five ZIPs and `checksums.txt`.

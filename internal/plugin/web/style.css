@@ -424,8 +424,103 @@ body:has(> #cpa-set-proxies) {
   font-size: 12.5px;
 }
 
-#cpa-set-proxies #empty:not([hidden]) + .table {
-  display: none;
+#cpa-set-proxies .csp-notice {
+  margin-bottom: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--csp-warning-border);
+  border-radius: 8px;
+  background: var(--csp-warning-bg);
+  color: var(--csp-warning-text);
+  font-size: 12px;
+}
+
+#cpa-set-proxies .csp-filter-bar,
+#cpa-set-proxies .csp-filters,
+#cpa-set-proxies .csp-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+#cpa-set-proxies .csp-filter-bar {
+  justify-content: space-between;
+  margin-bottom: 10px;
+  gap: 10px;
+}
+
+#cpa-set-proxies .csp-filters button {
+  min-height: 30px;
+  padding: 4px 10px;
+}
+
+#cpa-set-proxies .csp-filters button[aria-pressed="true"] {
+  background: var(--csp-info-bg);
+  color: var(--csp-info-text);
+  border-color: var(--csp-info-border);
+  box-shadow: inset 0 -2px 0 currentColor;
+}
+
+#cpa-set-proxies .csp-search input {
+  width: 220px;
+  min-width: 0;
+  min-height: 30px;
+}
+
+#cpa-set-proxies .csp-search span {
+  white-space: nowrap;
+}
+
+#cpa-set-proxies button.csp-btn-inline {
+  min-height: 28px;
+  padding: 4px 8px;
+  font-size: 12px;
+}
+
+#cpa-set-proxies .csp-preview-table {
+  max-height: 480px;
+}
+
+#cpa-set-proxies .csp-probe-panel {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--csp-border-subtle);
+}
+
+#cpa-set-proxies .csp-probe-toggle {
+  cursor: pointer;
+  color: var(--csp-text);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+#cpa-set-proxies .csp-probe-toggle span + span {
+  display: inline-block;
+  margin-left: 10px;
+  font-weight: 400;
+}
+
+#cpa-set-proxies .csp-probe-table {
+  max-height: 320px;
+  margin-top: 10px;
+}
+
+#cpa-set-proxies .csp-probe-table td:not(:first-child) {
+  font-family: var(--csp-font);
+  font-variant-numeric: tabular-nums;
+}
+
+#cpa-set-proxies .csp-probe-alive td:nth-child(2) {
+  color: var(--csp-success-text);
+}
+
+#cpa-set-proxies .csp-probe-failed td:nth-child(2) {
+  color: var(--csp-danger-text);
+}
+
+#cpa-set-proxies .csp-probe-pending {
+  color: var(--csp-text-muted);
 }
 
 #cpa-set-proxies .table {
@@ -601,6 +696,20 @@ body:has(> #cpa-set-proxies) {
 
   #cpa-set-proxies .csp-toolbar-actions button {
     flex: 1 1 auto;
+  }
+
+  #cpa-set-proxies .csp-search {
+    width: 100%;
+    flex-wrap: nowrap;
+  }
+
+  #cpa-set-proxies .csp-search input {
+    flex: 1;
+    width: 0;
+  }
+
+  #cpa-set-proxies .csp-probe-toggle span + span {
+    margin-left: 4px;
   }
 
 }

@@ -15,7 +15,7 @@ import (
 	"time"
 )
 
-const pluginVersion = "0.0.2"
+const pluginVersion = "0.0.3"
 
 const base = "/v0/management/plugins/cpa-plugin-set-proxies"
 const resource = "/v0/resource/plugins/cpa-plugin-set-proxies/ui"
@@ -28,12 +28,13 @@ type config struct {
 	Excludes []string `json:"excludes"`
 }
 type row struct {
-	Name     string `json:"name"`
-	Index    string `json:"auth_index"`
-	Current  string `json:"current_endpoint"`
-	Proposed string `json:"proposed_endpoint"`
-	Action   string `json:"action"`
-	Reason   string `json:"reason"`
+	Name       string `json:"name"`
+	Index      string `json:"auth_index"`
+	Current    string `json:"current_endpoint"`
+	Proposed   string `json:"proposed_endpoint"`
+	Action     string `json:"action"`
+	Reason     string `json:"reason"`
+	Excludable bool   `json:"excludable"`
 }
 type summary struct {
 	Proxies     int `json:"proxies"`
@@ -44,19 +45,29 @@ type summary struct {
 	External    int `json:"external"`
 	Excluded    int `json:"excluded"`
 }
+type ProbeResult struct {
+	Endpoint   string `json:"endpoint"`
+	Alive      bool   `json:"alive"`
+	DurationMS int64  `json:"duration_ms"`
+	Attempts   int    `json:"attempts"`
+	Category   string `json:"category"`
+	Checked    bool   `json:"checked"`
+}
 type state struct {
-	Configured bool          `json:"configured"`
-	KeySet     bool          `json:"management_key_set"`
-	Excludes   []string      `json:"excludes"`
-	Phase      string        `json:"phase"`
-	Stage      string        `json:"stage"`
-	Done       int           `json:"done"`
-	Total      int           `json:"total"`
-	Summary    summary       `json:"summary"`
-	Rows       []row         `json:"rows"`
-	PlanID     string        `json:"plan_id"`
-	Error      string        `json:"error"`
-	Results    []applyResult `json:"results"`
+	PreviewStale bool          `json:"preview_stale"`
+	Probes       []ProbeResult `json:"probes"`
+	Configured   bool          `json:"configured"`
+	KeySet       bool          `json:"management_key_set"`
+	Excludes     []string      `json:"excludes"`
+	Phase        string        `json:"phase"`
+	Stage        string        `json:"stage"`
+	Done         int           `json:"done"`
+	Total        int           `json:"total"`
+	Summary      summary       `json:"summary"`
+	Rows         []row         `json:"rows"`
+	PlanID       string        `json:"plan_id"`
+	Error        string        `json:"error"`
+	Results      []applyResult `json:"results"`
 }
 type assignment struct {
 	Name, Index, Path, Expected, Proxy string
@@ -80,9 +91,9 @@ type backend struct {
 }
 
 var service = &backend{
-	s:            state{Phase: "idle", Rows: []row{}, Excludes: []string{}, Results: []applyResult{}},
+	s:            state{Phase: "idle", Rows: []row{}, Excludes: []string{}, Results: []applyResult{}, Probes: []ProbeResult{}},
 	settingsPath: filepath.Join("data", "cpa-plugin-set-proxies", "settings.json"),
-	fetch:        fetchNodes, probe: probeNode, endpoint: cpaEndpoint, client: managementClient(),
+	fetch:        fetchNodes, endpoint: cpaEndpoint, client: managementClient(),
 }
 
 func SetHostCall(f func(string, any) (json.RawMessage, error)) {
@@ -99,6 +110,7 @@ func (b *backend) stop() {
 		c()
 	}
 	b.assignments = nil
+	b.expires = time.Time{}
 	b.s.PlanID = ""
 	b.mu.Unlock()
 	if ch != nil {
@@ -107,7 +119,7 @@ func (b *backend) stop() {
 	b.client.CloseIdleConnections()
 }
 func (b *backend) initialState() state {
-	return state{Phase: "idle", Configured: b.cfg.URL != "", KeySet: b.cfg.Key != "", Excludes: b.cfg.Excludes, Rows: []row{}, Results: []applyResult{}}
+	return state{Phase: "idle", Configured: b.cfg.URL != "", KeySet: b.cfg.Key != "", Excludes: b.cfg.Excludes, Rows: []row{}, Results: []applyResult{}, Probes: []ProbeResult{}}
 }
 func envelope(v any) ([]byte, error) { return json.Marshal(map[string]any{"ok": true, "result": v}) }
 func invalid() ([]byte, error) {
@@ -301,7 +313,15 @@ func (b *backend) saveSettings(raw []byte) ([]byte, error) {
 	defer b.mu.Unlock()
 	b.cfg = c
 	b.assignments = nil
+	b.expires = time.Time{}
+	previous := b.s
 	b.s = b.initialState()
+	b.s.Probes = previous.Probes
+	b.s.PreviewStale = len(previous.Rows) > 0 || len(previous.Results) > 0 || len(previous.Probes) > 0
+	if b.s.PreviewStale {
+		b.s.Rows, b.s.Summary, b.s.Results = previous.Rows, previous.Summary, previous.Results
+		b.s.Done, b.s.Total = previous.Done, previous.Total
+	}
 	return response(200, b.s)
 }
 func (b *backend) start() ([]byte, error) {
@@ -327,6 +347,7 @@ func (b *backend) start() ([]byte, error) {
 	b.cancel = cancel
 	b.finished = make(chan struct{})
 	b.assignments = nil
+	b.expires = time.Time{}
 	b.s = b.initialState()
 	b.s.Phase, b.s.Stage = "scanning", "fetch"
 	go b.run(ctx, c, b.finished)

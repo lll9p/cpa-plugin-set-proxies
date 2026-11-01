@@ -43,7 +43,7 @@ function readConnection(storedAuth, location = pageURL) {
 function harness({storedAuth, location = pageURL} = {}) {
   const elements = new Map(), requests = [], timers = new Map(), intervals = new Map(), events = new Map();
   const {globals, storage} = browserGlobals(storedAuth, location);
-  let nextTimer = 0;
+  let nextTimer = 0, nextElement = 0;
   const element = id => {
     if (!elements.has(id)) elements.set(id, {
       value:'', disabled:false, hidden:false, textContent:'', children:[], open:false, attributes:new Map(),
@@ -67,7 +67,7 @@ function harness({storedAuth, location = pageURL} = {}) {
   };
   const bridge = {version:1, request:(path, body) => reply(base + path, {method:body === undefined ? 'GET' : 'POST', body:body === undefined ? undefined : JSON.stringify(body)})};
   Object.assign(globals, {
-    document:{getElementById:element, createElement:() => ({textContent:'', children:[], append(child) { this.children.push(child); }})},
+    document:{getElementById:element, createElement:() => element('created-' + ++nextElement)},
     setTimeout:fn => { const id = ++nextTimer; timers.set(id, fn); return id; },
     clearTimeout:id => timers.delete(id),
     setInterval:(fn, delay) => { const id = ++nextTimer; intervals.set(id, {fn, delay}); return id; },
@@ -182,9 +182,23 @@ test('scan requires saved URL, sends only empty plugin request, disables setting
 
 test('apply polls backend results including unknown and unprocessed; browser never downloads or PATCHes credentials', async () => {
   const h = harness(), $ = h.element;
-  h.state = ready(); await h.connect();
+  h.state = {...ready(), probes:[
+    {endpoint:'proxy:1080', alive:false, checked:true, duration_ms:15000, attempts:3, category:'timeout'},
+    {endpoint:'other:1080', alive:false, checked:false, duration_ms:0, attempts:0, category:''},
+  ]};
+  await h.connect();
+  assert.equal($('filterAssign').getAttribute('aria-pressed'), 'true');
+  assert.match($('probeStats').textContent, /已检测 1 \/ 2 · 可用 0 · 失败 1/);
+  assert.equal($('probeRows').children[0].children[4].textContent, '连接超时');
+  assert.equal($('probeRows').children[1].children[1].textContent, '未完成');
+  $('search').value = 'missing'; $('search').oninput();
+  assert.equal($('rows').children.length, 0);
+  assert.equal($('apply').textContent, '应用变更 · 5');
   $('apply').onclick(); assert.equal($('confirm').open, true);
-  assert.match($('confirmDescription').textContent, /更新 5 个凭证/);
+  assert.match($('confirmDescription').textContent, /更新 5 个凭证.*完整计划.*不受当前筛选影响/);
+  $('emptyReset').onclick();
+  assert.equal($('search').value, '');
+  assert.equal($('rows').children.length, 1);
   h.state.phase = 'applying'; h.state.stage = 'write';
   await $('confirmYes').onclick();
   const apply = h.requests.find(r => r.path.endsWith('/apply'));

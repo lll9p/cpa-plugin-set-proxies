@@ -32,10 +32,14 @@ func TestSettingsAPIAndRestart(t *testing.T) {
 	b := testBackend(t, []any{""})
 	scan(t, b)
 	oldPlan := b.s.PlanID
+	previous := b.s
 	header := http.Header{"Authorization": {"Bearer saved-secret"}}
 	raw := managementRequest(t, b, "POST", base+"/settings", map[string]any{"management_key": " saved-secret ", "webshare_url": " https://example.com/private-url ", "excludes": []string{" a.json ", " ", "b.json"}}, header)
 	if status(t, raw) != 200 || b.cfg.URL != "https://example.com/private-url" || b.cfg.Key != "saved-secret" || strings.Join(b.cfg.Excludes, ",") != "a.json,b.json" || b.s.PlanID != "" {
 		t.Fatalf("settings not saved or plan not invalidated: %+v", b.s)
+	}
+	if !b.s.PreviewStale || len(b.s.Rows) != len(previous.Rows) || b.s.Summary != previous.Summary || len(b.s.Probes) != len(previous.Probes) || !b.expires.IsZero() || len(b.assignments) != 0 {
+		t.Fatal("settings change did not retain an unappliable preview")
 	}
 	if strings.Contains(string(responseBody(t, raw)), "saved-secret") || strings.Contains(string(responseBody(t, raw)), "private-url") {
 		t.Fatal("settings response leaked secrets")
@@ -54,7 +58,7 @@ func TestSettingsAPIAndRestart(t *testing.T) {
 	raw, _ = restarted.handle("plugin.register", []byte(`{}`))
 	var registration struct{ OK bool }
 	json.Unmarshal(raw, &registration)
-	if !registration.OK || restarted.cfg.Key != "rotated-secret" || !restarted.s.KeySet || !restarted.s.Configured || restarted.s.Phase != "idle" || restarted.s.PlanID != "" {
+	if !registration.OK || restarted.cfg.Key != "rotated-secret" || !restarted.s.KeySet || !restarted.s.Configured || restarted.s.Phase != "idle" || restarted.s.PlanID != "" || restarted.s.PreviewStale || len(restarted.s.Probes) != 0 {
 		t.Fatal("restart failed to restore settings or restored a stale plan")
 	}
 	state := managementRequest(t, restarted, "GET", base+"/state", nil, header)

@@ -1,6 +1,9 @@
 'use strict';
 const $ = id => document.getElementById(id);
 let host = null, state = null, timer, locked = false, authenticated = false, editingKey = false, session = 0, connectionID = '', observedConnectionID = '';
+let filterMode = 'assign', pendingExclusion = '', excludeButtons = [], probeFailureOpened = false;
+const filters = {assign:['filterAssign', '待变更'], all:['filterAll', '全部'], keep:['filterKeep', '保留'], skip:['filterSkip', '跳过']};
+const probeFailures = {timeout:'连接超时', connect:'TCP 连接失败', socks_auth:'SOCKS 认证失败', socks:'SOCKS 握手失败', tls:'TLS 握手失败', unknown:'未知错误'};
 function readCPAConnection() {
   try {
     const suffix = '/v0/resource/plugins/cpa-plugin-set-proxies/ui';
@@ -166,7 +169,15 @@ function controls() {
   $('cancelKey').hidden = !state?.management_key_set;
   $('clearURL').disabled = !authenticated || busy || !state?.configured;
   $('scan').disabled = !authenticated || busy || !state?.configured;
-  $('apply').disabled = !authenticated || busy || !state?.management_key_set || state?.phase !== 'ready' || !state?.plan_id || !(state?.summary?.pending > 0);
+  $('apply').disabled = !authenticated || busy || !state?.management_key_set || state?.preview_stale || state?.phase !== 'ready' || !state?.plan_id || !(state?.summary?.pending > 0);
+  $('apply').textContent = state?.summary?.pending > 0 ? `应用变更 · ${state.summary.pending}` : '应用变更';
+  for (const {button, name, excluded} of excludeButtons) {
+    button.disabled = !authenticated || busy || !state?.management_key_set;
+    button.textContent = pendingExclusion === name ? '保存中…' : excluded ? '取消排除' : '排除';
+    button.title = !state?.management_key_set ? '请先在设置中保存管理密码' : '';
+  }
+  for (const [id] of Object.values(filters)) $(id).disabled = !authenticated;
+  $('search').disabled = !authenticated;
   $('cancel').disabled = !authenticated || locked || !(active() || state?.plan_id) || state?.phase === 'cancelling';
   $('refresh').disabled = locked;
   $('apply').hidden = !authenticated || !state?.plan_id;
@@ -177,7 +188,14 @@ function disconnect(text = '未读取到 CPA 登录信息，请在管理页面�
   session++; host = null; connectionID = ''; authenticated = false; state = null; locked = false; editingKey = false;
   clearTimeout(timer);
   for (const id of ['url', 'excludes', 'managementKey']) $(id).value = '';
-  for (const id of ['rows', 'results']) $(id).replaceChildren();
+  filterMode = 'assign'; pendingExclusion = ''; excludeButtons = []; probeFailureOpened = false;
+  $('search').value = '';
+  for (const id of ['rows', 'results', 'probeRows']) $(id).replaceChildren();
+  for (const id of ['filterBar', 'planNotice', 'previewTable', 'probePanel', 'emptyReset']) $(id).hidden = true;
+  $('probePanel').open = false;
+  $('previewTitle').textContent = '分配预览';
+  $('emptyText').textContent = '扫描后显示分配预览';
+  $('probeStats').textContent = ''; $('filterCount').textContent = '';
   $('confirm').close();
   $('configured').textContent = '';
   $('keyStatus').textContent = '待读取';
@@ -209,6 +227,99 @@ async function request(path, body) {
   }
   return response.data;
 }
+function normalizeExcludes(value) {
+  const names = Array.isArray(value) ? value : value.split(/\r?\n/);
+  return [...new Set(names.map(name => name.trim()).filter(Boolean))];
+}
+function cells(tr, values) {
+  for (const value of values) {
+    const td = document.createElement('td'); td.textContent = value || '—'; tr.append(td);
+  }
+}
+function renderPreview() {
+  const rows = state.rows || [], query = $('search').value.trim().toLowerCase();
+  const visible = rows.filter(row => (filterMode === 'all' || row.action === filterMode) && row.name.toLowerCase().includes(query));
+  $('previewTitle').textContent = state.preview_stale ? '上次预览' : '分配预览';
+  $('planNotice').hidden = !state.preview_stale;
+  $('filterBar').hidden = !rows.length;
+  for (const [mode, [id, label]] of Object.entries(filters)) {
+    const count = mode === 'all' ? rows.length : rows.filter(row => row.action === mode).length;
+    $(id).textContent = `${label} ${count}`;
+    $(id).setAttribute('aria-pressed', String(mode === filterMode));
+  }
+  $('filterCount').textContent = `显示 ${visible.length} / ${rows.length}`;
+  $('empty').hidden = Boolean(visible.length);
+  $('previewTable').hidden = !visible.length;
+  $('emptyReset').hidden = !rows.length || (!query && filterMode === 'all');
+  $('emptyReset').textContent = query ? '清除筛选与搜索' : `查看全部 ${rows.length} 项`;
+  $('emptyText').textContent = !rows.length ? '扫描后显示分配预览' : query ? '没有匹配的凭证' : filterMode === 'assign' ? '当前无需变更' : '当前筛选下无凭证';
+  const focusedName = document.activeElement?.getAttribute('data-exclude-name');
+  $('rows').replaceChildren(); excludeButtons = [];
+  for (const row of visible) {
+    const tr = document.createElement('tr');
+    if (['assign', 'keep', 'skip'].includes(row.action)) tr.className = row.action;
+    const action = row.action === 'assign' && !row.current_endpoint ? '分配' : {keep:'保留',assign:'替换',skip:'跳过'}[row.action] || '未知';
+    cells(tr, [row.name, row.current_endpoint, row.proposed_endpoint, action, reasons[row.reason] || '其他原因']);
+    const td = document.createElement('td'), excluded = (state.excludes || []).includes(row.name);
+    if (row.excludable || excluded) {
+      const button = document.createElement('button');
+      button.type = 'button'; button.className = 'csp-btn-inline';
+      button.setAttribute('data-exclude-name', row.name);
+      button.setAttribute('aria-label', (excluded ? '取消排除 ' : '排除 ') + row.name);
+      button.onclick = () => toggleExclude(row.name);
+      excludeButtons.push({button, name:row.name, excluded}); td.append(button);
+    } else td.textContent = '—';
+    tr.append(td); $('rows').append(tr);
+  }
+  controls();
+  if (focusedName) excludeButtons.find(item => item.name === focusedName)?.button.focus({preventScroll:true});
+}
+function renderProbes() {
+  const probes = state.probes || [], checked = probes.filter(probe => probe.checked);
+  const alive = checked.filter(probe => probe.alive).length;
+  $('probePanel').hidden = !probes.length;
+  $('probeStats').textContent = `已检测 ${checked.length} / ${probes.length} · 可用 ${alive} · 失败 ${checked.length - alive}`;
+  if (!probes.length) { $('probePanel').open = false; probeFailureOpened = false; }
+  if (state.error === 'No live proxies' && !probeFailureOpened) {
+    $('probePanel').open = true; probeFailureOpened = true;
+  }
+  $('probeRows').replaceChildren();
+  for (const probe of probes) {
+    const tr = document.createElement('tr');
+    tr.className = !probe.checked ? 'csp-probe-pending' : probe.alive ? 'csp-probe-alive' : 'csp-probe-failed';
+    const status = !probe.checked ? active() ? '待检测' : '未完成' : probe.alive ? '可用' : '不可用';
+    const category = Object.hasOwn(probeFailures, probe.category) ? probeFailures[probe.category] : '未知错误';
+    const duration = probe.checked && Number.isFinite(probe.duration_ms) && probe.duration_ms >= 0 ? probe.duration_ms === 0 ? '<1 ms' : `${probe.duration_ms} ms` : '—';
+    cells(tr, [probe.endpoint, status, duration, probe.checked ? `${probe.attempts}/3` : '—', probe.checked && !probe.alive ? category : '—']);
+    $('probeRows').append(tr);
+  }
+}
+async function toggleExclude(name) {
+  if (!authenticated || locked || active() || !state?.management_key_set) return;
+  const current = session, excluded = (state.excludes || []).includes(name);
+  const update = names => excluded ? names.filter(value => value !== name) : [...new Set([...names, name])];
+  const next = update(normalizeExcludes(state.excludes || []));
+  pendingExclusion = name;
+  await command('/settings', {excludes:next}, false, () => {
+    $('excludes').value = update(normalizeExcludes($('excludes').value)).join('\n');
+    state = {...state, excludes:next, plan_id:'', preview_stale:true, phase:'idle', stage:'', error:''};
+    render();
+  });
+  if (current !== session) return;
+  const focus = document.activeElement;
+  const restoreFocus = !focus || focus === document.body || focus.getAttribute('data-exclude-name') === name;
+  pendingExclusion = ''; controls();
+  if (restoreFocus) excludeButtons.find(item => item.name === name)?.button.focus({preventScroll:true});
+}
+for (const [mode, [id]] of Object.entries(filters)) $(id).onclick = () => {
+  if (!authenticated) return;
+  filterMode = mode; renderPreview();
+};
+$('search').oninput = () => { if (authenticated) renderPreview(); };
+$('emptyReset').onclick = () => {
+  if (!authenticated || !state) return;
+  filterMode = 'all'; $('search').value = ''; renderPreview(); $('search').focus();
+};
 function render() {
   $('configured').textContent = (state.configured ? '链接已保存' : '未保存下载链接') + ' · ' + (state.management_key_set ? '密码已设置' : '未设置管理密码');
   $('keyStatus').textContent = state.error === 'CPA management authentication failed' ? '需要更新' : state.management_key_set ? '已设置' : '未设置';
@@ -218,16 +329,8 @@ function render() {
   $('progress').hidden = !active();
   $('progress').max = Math.max(1, state.total || 0); $('progress').value = state.done || 0;
   $('summary').textContent = `进度 ${state.done || 0}/${state.total || 0} · 代理 ${s.proxies || 0} · 可用 ${s.alive || 0} · 凭证 ${s.credentials || 0} · 保留 ${s.kept || 0} · 待替换 ${s.pending || 0} · 外部 ${s.external || 0} · 排除 ${s.excluded || 0}`;
-  $('rows').replaceChildren();
-  $('empty').hidden = Boolean(state.rows?.length);
-  for (const row of state.rows || []) {
-    const tr = document.createElement('tr');
-    if (row.action === 'assign' || row.action === 'keep' || row.action === 'skip') tr.className = row.action;
-    for (const value of [row.name, row.current_endpoint, row.proposed_endpoint, {keep:'保留',assign:'替换',skip:'跳过'}[row.action] || '未知', reasons[row.reason] || '其他原因']) {
-      const td = document.createElement('td'); td.textContent = value || '—'; tr.append(td);
-    }
-    $('rows').append(tr);
-  }
+  renderPreview();
+  renderProbes();
   const results = state.results || [];
   $('resultPanel').hidden = !(results.length || state.phase === 'applying' || state.phase === 'completed');
   const count = status => results.filter(result => result.status === status).length;
@@ -257,9 +360,14 @@ async function refresh(initial = false) {
       $('excludes').value = (next.excludes || []).join('\n');
       editingKey = !next.management_key_set || keyInvalid;
       $('settings').open = !next.configured || editingKey;
-    } else if (keyInvalid && state?.error !== next.error) {
-      editingKey = true;
-      $('settings').open = true;
+    } else {
+      if (JSON.stringify(normalizeExcludes($('excludes').value)) === JSON.stringify(normalizeExcludes(state?.excludes || []))) {
+        $('excludes').value = (next.excludes || []).join('\n');
+      }
+      if (keyInvalid && state?.error !== next.error) {
+        editingKey = true;
+        $('settings').open = true;
+      }
     }
     state = next; authenticated = true;
     render();
@@ -270,7 +378,7 @@ async function refresh(initial = false) {
   }
   if (current === session) poll();
 }
-async function command(path, body, saved = false) {
+async function command(path, body, saved = false, onSaved) {
   if (!authenticated || locked) return;
   const current = session;
   locked = true; controls(); clearTimeout(timer);
@@ -278,6 +386,7 @@ async function command(path, body, saved = false) {
   try {
     await request(path, body);
     if (current !== session) return;
+    if (onSaved) onSaved();
     if (saved) $('url').value = '';
     if (body?.management_key) {
       $('managementKey').value = '';
@@ -332,11 +441,15 @@ $('saveKey').onclick = () => {
   if (!key) { message('请输入 CPA 管理密码。', 'failed'); return; }
   return command('/settings', {management_key:key});
 };
-$('scan').onclick = () => { if (!$('scan').disabled) return command('/scan', {}); };
+$('scan').onclick = () => {
+  if ($('scan').disabled) return;
+  probeFailureOpened = false;
+  return command('/scan', {});
+};
 $('cancel').onclick = () => { if (!$('cancel').disabled) return command('/cancel', {}); };
 $('apply').onclick = () => {
   if ($('apply').disabled) return;
-  $('confirmDescription').textContent = `将更新 ${state.summary.pending} 个凭证。关闭页面或退出不会中止任务。取消仅停止后续写入，已完成的变更不会回滚。`;
+  $('confirmDescription').textContent = `将更新 ${state.summary.pending} 个凭证，应用范围为完整计划，不受当前筛选影响。关闭页面或退出不会中止任务。取消仅停止后续写入，已完成的变更不会回滚。`;
   $('confirm').showModal();
 };
 $('confirmNo').onclick = () => $('confirm').close();

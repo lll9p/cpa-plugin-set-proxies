@@ -48,14 +48,38 @@
     <p id="summary" class="csp-summary"></p>
   </div>
   <progress id="progress" value="0" max="1" aria-label="任务进度"></progress>
-  <p id="empty" class="csp-empty">扫描后显示分配预览</p>
-  <div class="table" tabindex="0" role="region" aria-label="扫描预览，可横向滚动">
+  <p id="planNotice" class="csp-notice" role="status" hidden>设置已更新，请重新扫描。</p>
+  <div id="filterBar" class="csp-filter-bar" hidden>
+    <div class="csp-filters" role="group" aria-label="筛选凭证">
+      <button id="filterAssign" type="button" aria-pressed="true">待变更 0</button>
+      <button id="filterAll" type="button" aria-pressed="false">全部 0</button>
+      <button id="filterKeep" type="button" aria-pressed="false">保留 0</button>
+      <button id="filterSkip" type="button" aria-pressed="false">跳过 0</button>
+    </div>
+    <div class="csp-search">
+      <label for="search" class="csp-sr-only">按凭证文件名搜索</label>
+      <input id="search" type="search" placeholder="搜索凭证文件名" autocomplete="off">
+      <span id="filterCount" class="csp-meta" aria-live="polite"></span>
+    </div>
+  </div>
+  <div id="empty" class="csp-empty"><span id="emptyText">扫描后显示分配预览</span> <button id="emptyReset" class="csp-btn-ghost" type="button" hidden>查看全部</button></div>
+  <div id="previewTable" class="table csp-preview-table" tabindex="0" role="region" aria-label="扫描预览，可横向滚动" hidden>
     <table>
       <caption class="csp-sr-only">凭证代理分配预览</caption>
-      <thead><tr><th scope="col">凭证</th><th scope="col">当前代理</th><th scope="col">新代理</th><th scope="col">操作</th><th scope="col">原因</th></tr></thead>
+      <thead><tr><th scope="col">凭证</th><th scope="col">当前代理</th><th scope="col">新代理</th><th scope="col">操作</th><th scope="col">原因</th><th scope="col">排除</th></tr></thead>
       <tbody id="rows"></tbody>
     </table>
   </div>
+  <details id="probePanel" class="csp-probe-panel" hidden>
+    <summary class="csp-probe-toggle"><span>代理检测明细</span><span id="probeStats" class="csp-meta"></span></summary>
+    <div class="table csp-probe-table" tabindex="0" role="region" aria-label="代理检测明细，可横向滚动">
+      <table>
+        <caption class="csp-sr-only">代理 SOCKS 与 TLS 连接检测结果</caption>
+        <thead><tr><th scope="col">代理地址</th><th scope="col">状态</th><th scope="col" title="成功那次或最后一次失败的 SOCKS 与 TLS 建连耗时，不含先前重试和等待">建连耗时</th><th scope="col">尝试</th><th scope="col">失败原因</th></tr></thead>
+        <tbody id="probeRows"></tbody>
+      </table>
+    </div>
+  </details>
   <div id="resultPanel" class="csp-results-panel" hidden>
     <div class="csp-results-header">
       <h3>应用结果</h3>

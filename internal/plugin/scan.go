@@ -126,17 +126,63 @@ func fetchNodes(ctx context.Context, address string) ([]node, error) {
 	return out, nil
 }
 func probeNode(ctx context.Context, n node) bool {
-	d, e := proxy.SOCKS5("tcp", n.endpoint(), &proxy.Auth{User: n.User, Password: n.Password}, &net.Dialer{})
-	if e != nil {
-		return false
+	return probeNodeDetailed(ctx, n).Alive
+}
+
+func probeCategory(ctx context.Context, err error, tlsStage bool) string {
+	if errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
+		return ""
 	}
-	c, e := d.(proxy.ContextDialer).DialContext(ctx, "tcp", "www.cloudflare.com:443")
-	if e != nil {
-		return false
+	var network net.Error
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) || errors.As(err, &network) && network.Timeout() {
+		return "timeout"
 	}
-	defer c.Close()
-	t := tls.Client(c, &tls.Config{ServerName: "www.cloudflare.com", MinVersion: tls.VersionTLS12})
-	return t.HandshakeContext(ctx) == nil
+	if tlsStage {
+		return "tls"
+	}
+	for cause := err; cause != nil; cause = errors.Unwrap(cause) {
+		if op, ok := cause.(*net.OpError); ok && op.Op == "dial" {
+			return "connect"
+		}
+	}
+	var op *net.OpError
+	if errors.As(err, &op) && op.Op == "socks connect" {
+		// x/net exposes no sentinel for SOCKS authentication or protocol failures.
+		switch op.Err.Error() {
+		case "username/password authentication failed", "invalid username/password", "no acceptable authentication methods":
+			return "socks_auth"
+		case "invalid username/password version", "non-zero reserved field",
+			"unknown error general SOCKS server failure", "unknown error connection not allowed by ruleset",
+			"unknown error network unreachable", "unknown error host unreachable", "unknown error connection refused",
+			"unknown error TTL expired", "unknown error command not supported", "unknown error address type not supported":
+			return "socks"
+		}
+	}
+	return "unknown"
+}
+
+func probeNodeDetailed(ctx context.Context, n node) (result ProbeResult) {
+	started := time.Now()
+	defer func() { result.DurationMS = time.Since(started).Milliseconds() }()
+	d, err := proxy.SOCKS5("tcp", n.endpoint(), &proxy.Auth{User: n.User, Password: n.Password}, &net.Dialer{})
+	tlsStage := false
+	if err == nil {
+		var c net.Conn
+		c, err = d.(proxy.ContextDialer).DialContext(ctx, "tcp", "www.cloudflare.com:443")
+		if err == nil {
+			defer c.Close()
+			tlsStage = true
+			t := tls.Client(c, &tls.Config{ServerName: "www.cloudflare.com", MinVersion: tls.VersionTLS12})
+			err = t.HandshakeContext(ctx)
+		}
+	}
+	if err == nil {
+		result.Alive, result.Checked = true, true
+	} else {
+		result.Category = probeCategory(ctx, err, tlsStage)
+		result.Checked = result.Category != ""
+	}
+	return result
 }
 
 type entry struct {
@@ -145,6 +191,13 @@ type entry struct {
 	Path    string `json:"path"`
 	Runtime bool   `json:"runtime_only"`
 	Source  string `json:"source"`
+}
+
+func excludable(f entry) bool {
+	return !f.Runtime && f.Source != "config" && f.Source != "memory" &&
+		f.Name != "" && !strings.ContainsAny(f.Name, "/\\\x00") && strings.HasSuffix(strings.ToLower(f.Name), ".json") &&
+		f.Path != "" && !strings.Contains(f.Path, "://") && !strings.ContainsRune(f.Path, '\x00') &&
+		strings.HasSuffix(strings.ToLower(filepath.Base(f.Path)), ".json")
 }
 
 func (b *backend) read(index string) (string, string, error) {
@@ -202,6 +255,10 @@ func (b *backend) run(ctx context.Context, c config, finished chan struct{}) {
 	b.s.Stage = "probe"
 	b.s.Total = len(nodes)
 	b.s.Summary.Proxies = len(nodes)
+	b.s.Probes = make([]ProbeResult, len(nodes))
+	for i, n := range nodes {
+		b.s.Probes[i].Endpoint = n.endpoint()
+	}
 	b.mu.Unlock()
 	flags := make([]bool, len(nodes))
 	var wg sync.WaitGroup
@@ -211,24 +268,38 @@ func (b *backend) run(ctx context.Context, c config, finished chan struct{}) {
 		go func() {
 			defer wg.Done()
 			for i := range jobs {
-				for attempt := 0; attempt < 3 && ctx.Err() == nil; attempt++ {
+				for attempt := 1; attempt <= 3 && ctx.Err() == nil; attempt++ {
 					pc, cancel := context.WithTimeout(ctx, 15*time.Second)
-					ok := b.probe(pc, nodes[i])
-					cancel()
-					if ok {
-						flags[i] = true
-						break
-					}
-					if attempt < 2 {
-						select {
-						case <-ctx.Done():
-						case <-time.After(time.Second):
+					var result ProbeResult
+					if b.probe == nil {
+						result = probeNodeDetailed(pc, nodes[i])
+					} else {
+						started := time.Now()
+						result.Alive = b.probe(pc, nodes[i])
+						result.DurationMS = time.Since(started).Milliseconds()
+						result.Checked = result.Alive || !errors.Is(pc.Err(), context.Canceled)
+						if result.Checked {
+							result.Category = "unknown"
 						}
 					}
+					cancel()
+					if !result.Checked {
+						break
+					}
+					if result.Alive || attempt == 3 {
+						result.Endpoint, result.Attempts = nodes[i].endpoint(), attempt
+						flags[i] = result.Alive
+						b.mu.Lock()
+						b.s.Probes[i] = result
+						b.s.Done++
+						b.mu.Unlock()
+						break
+					}
+					select {
+					case <-ctx.Done():
+					case <-time.After(time.Second):
+					}
 				}
-				b.mu.Lock()
-				b.s.Done++
-				b.mu.Unlock()
 			}
 		}()
 	}
@@ -301,7 +372,7 @@ enqueue:
 		if ctx.Err() != nil {
 			return
 		}
-		r := row{Name: f.Name, Index: f.Index, Action: "skip"}
+		r := row{Name: f.Name, Index: f.Index, Action: "skip", Excludable: excludable(f)}
 		if excludes[f.Name] || f.Runtime || f.Source == "config" || f.Source == "memory" || blocked[filepath.Clean(f.Path)] {
 			r.Reason = "excluded or runtime-only"
 			stats.Excluded++
@@ -330,6 +401,8 @@ enqueue:
 		path = filepath.Clean(path)
 		f.Name = filepath.Base(path)
 		r.Name = f.Name
+		f.Path = path
+		r.Excludable = excludable(f)
 		if excludes[f.Name] || blocked[path] || !strings.HasSuffix(strings.ToLower(f.Name), ".json") {
 			r.Reason = "excluded or not a credential file"
 			stats.Excluded++

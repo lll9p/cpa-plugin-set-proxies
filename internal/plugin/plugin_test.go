@@ -88,6 +88,14 @@ func TestAllocation(t *testing.T) {
 	if b.s.Phase != "ready" || b.s.Summary.Kept != 1 || b.s.Summary.External != 6 {
 		t.Fatalf("state %+v", b.s)
 	}
+	if len(b.s.Probes) != 2 || b.s.Probes[0].Endpoint != a.endpoint() || b.s.Probes[1].Endpoint != z.endpoint() {
+		t.Fatal("probe results did not preserve download order")
+	}
+	for _, row := range b.s.Rows {
+		if !row.Excludable {
+			t.Fatal("file-backed credential cannot be excluded")
+		}
+	}
 	want := []node{z, a, z, a, z, a, z}
 	for i, x := range b.assignments {
 		if x.Proxy != want[i].URL() {
