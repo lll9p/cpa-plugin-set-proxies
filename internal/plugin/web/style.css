@@ -288,6 +288,38 @@ body:has(> #cpa-set-proxies) {
   transition: border-color 0.15s ease, box-shadow 0.15s ease, background-color 0.15s ease;
 }
 
+#cpa-set-proxies .csp-field-wide {
+  grid-column: 1 / -1;
+}
+
+#cpa-set-proxies .csp-auto-row {
+  gap: 10px;
+}
+
+#cpa-set-proxies .csp-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+#cpa-set-proxies input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  min-height: 0;
+  padding: 0;
+  flex: 0 0 auto;
+  accent-color: var(--csp-primary);
+}
+
+#cpa-set-proxies .csp-inline-label {
+  color: var(--csp-text-secondary);
+  font-weight: 400;
+}
+
+#cpa-set-proxies #autoMinutes {
+  width: 96px;
+}
+
 #cpa-set-proxies textarea {
   resize: vertical;
   min-height: 54px;

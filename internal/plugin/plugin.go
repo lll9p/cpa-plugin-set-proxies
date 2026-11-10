@@ -23,9 +23,10 @@ const planTTL = 10 * time.Minute
 const maxSettingsSize = 64 << 10
 
 type config struct {
-	URL      string   `json:"webshare_url"`
-	Key      string   `json:"management_key"`
-	Excludes []string `json:"excludes"`
+	AutoIntervalMinutes int      `json:"auto_interval_minutes"`
+	URL                 string   `json:"webshare_url"`
+	Key                 string   `json:"management_key"`
+	Excludes            []string `json:"excludes"`
 }
 type row struct {
 	Name       string `json:"name"`
@@ -54,40 +55,48 @@ type ProbeResult struct {
 	Checked    bool   `json:"checked"`
 }
 type state struct {
-	PreviewStale bool          `json:"preview_stale"`
-	Probes       []ProbeResult `json:"probes"`
-	Configured   bool          `json:"configured"`
-	KeySet       bool          `json:"management_key_set"`
-	Excludes     []string      `json:"excludes"`
-	Phase        string        `json:"phase"`
-	Stage        string        `json:"stage"`
-	Done         int           `json:"done"`
-	Total        int           `json:"total"`
-	Summary      summary       `json:"summary"`
-	Rows         []row         `json:"rows"`
-	PlanID       string        `json:"plan_id"`
-	Error        string        `json:"error"`
-	Results      []applyResult `json:"results"`
+	AutoIntervalMinutes int           `json:"auto_interval_minutes"`
+	LastCheckAt         string        `json:"last_check_at,omitempty"`
+	NextCheckAt         string        `json:"next_check_at,omitempty"`
+	PreviewStale        bool          `json:"preview_stale"`
+	Probes              []ProbeResult `json:"probes"`
+	Configured          bool          `json:"configured"`
+	KeySet              bool          `json:"management_key_set"`
+	Excludes            []string      `json:"excludes"`
+	Phase               string        `json:"phase"`
+	Stage               string        `json:"stage"`
+	Done                int           `json:"done"`
+	Total               int           `json:"total"`
+	Summary             summary       `json:"summary"`
+	Rows                []row         `json:"rows"`
+	PlanID              string        `json:"plan_id"`
+	Error               string        `json:"error"`
+	Results             []applyResult `json:"results"`
 }
 type assignment struct {
 	Name, Index, Path, Expected, Proxy string
 }
 type backend struct {
-	mu           sync.Mutex
-	life         sync.Mutex
-	quiesced     bool
-	cfg          config
-	settingsPath string
-	host         func(string, any) (json.RawMessage, error)
-	s            state
-	cancel       context.CancelFunc
-	finished     chan struct{}
-	assignments  []assignment
-	expires      time.Time
-	fetch        func(context.Context, string) ([]node, error)
-	probe        func(context.Context, node) bool
-	endpoint     func() (string, error)
-	client       *http.Client
+	schedCancel              context.CancelFunc
+	schedDone                chan struct{}
+	lastCheckAt, nextCheckAt string
+	startupDelay             time.Duration
+	interval                 func(int) time.Duration
+	mu                       sync.Mutex
+	life                     sync.Mutex
+	quiesced                 bool
+	cfg                      config
+	settingsPath             string
+	host                     func(string, any) (json.RawMessage, error)
+	s                        state
+	cancel                   context.CancelFunc
+	finished                 chan struct{}
+	assignments              []assignment
+	expires                  time.Time
+	fetch                    func(context.Context, string) ([]node, error)
+	probe                    func(context.Context, node) bool
+	endpoint                 func() (string, error)
+	client                   *http.Client
 }
 
 var service = &backend{
@@ -105,6 +114,12 @@ func Quiesce() { service.life.Lock(); defer service.life.Unlock(); service.stop(
 func (b *backend) stop() {
 	b.mu.Lock()
 	b.quiesced = true
+	sc, sd := b.schedCancel, b.schedDone
+	b.schedCancel, b.schedDone = nil, nil
+	b.nextCheckAt, b.s.NextCheckAt = "", ""
+	if sc != nil {
+		sc()
+	}
 	c, ch := b.cancel, b.finished
 	if c != nil {
 		c()
@@ -113,13 +128,16 @@ func (b *backend) stop() {
 	b.expires = time.Time{}
 	b.s.PlanID = ""
 	b.mu.Unlock()
+	if sd != nil {
+		<-sd
+	}
 	if ch != nil {
 		<-ch
 	}
 	b.client.CloseIdleConnections()
 }
 func (b *backend) initialState() state {
-	return state{Phase: "idle", Configured: b.cfg.URL != "", KeySet: b.cfg.Key != "", Excludes: b.cfg.Excludes, Rows: []row{}, Results: []applyResult{}, Probes: []ProbeResult{}}
+	return state{AutoIntervalMinutes: b.cfg.AutoIntervalMinutes, LastCheckAt: b.lastCheckAt, NextCheckAt: b.nextCheckAt, Phase: "idle", Configured: b.cfg.URL != "", KeySet: b.cfg.Key != "", Excludes: b.cfg.Excludes, Rows: []row{}, Results: []applyResult{}, Probes: []ProbeResult{}}
 }
 func envelope(v any) ([]byte, error) { return json.Marshal(map[string]any{"ok": true, "result": v}) }
 func invalid() ([]byte, error) {
@@ -143,9 +161,15 @@ func (b *backend) handle(method string, raw []byte) ([]byte, error) {
 			return json.Marshal(map[string]any{"ok": false, "error": map[string]string{"code": "settings_error", "message": "Unable to load plugin settings"}})
 		}
 		b.mu.Lock()
+		b.lastCheckAt, b.nextCheckAt = "", ""
 		b.cfg = c
 		b.quiesced = false
 		b.s = b.initialState()
+		d := b.startupDelay
+		if d == 0 {
+			d = 30 * time.Second
+		}
+		b.startScheduler(d)
 		b.mu.Unlock()
 		return envelope(map[string]any{"schema_version": 6, "metadata": map[string]any{"Name": "cpa-plugin-set-proxies", "Version": pluginVersion, "Author": "lll9p", "GitHubRepository": "https://github.com/lll9p/cpa-plugin-set-proxies", "ConfigFields": []any{}}, "capabilities": map[string]bool{"management_api": true}})
 	case "plugin.quiesce", "plugin.shutdown":
@@ -237,10 +261,11 @@ func id() (string, error) {
 }
 func (b *backend) saveSettings(raw []byte) ([]byte, error) {
 	var p struct {
-		URL      string          `json:"webshare_url"`
-		Key      json.RawMessage `json:"management_key"`
-		Excludes *[]string       `json:"excludes"`
-		ClearURL bool            `json:"clear_webshare_url"`
+		URL          string          `json:"webshare_url"`
+		Key          json.RawMessage `json:"management_key"`
+		Excludes     *[]string       `json:"excludes"`
+		ClearURL     bool            `json:"clear_webshare_url"`
+		AutoInterval json.RawMessage `json:"auto_interval_minutes"`
 	}
 	if len(raw) > maxSettingsSize || !jsonObject(raw) || json.Unmarshal(raw, &p) != nil {
 		return response(400, map[string]string{"error": "Invalid JSON"})
@@ -252,6 +277,15 @@ func (b *backend) saveSettings(raw []byte) ([]byte, error) {
 	p.URL = strings.TrimSpace(p.URL)
 	if strings.ContainsAny(key, "\r\n") || !validURL(p.URL) || p.ClearURL && p.URL != "" {
 		return response(400, map[string]string{"error": "Invalid settings or missing management key"})
+	}
+	var autoMinutes int
+	if p.AutoInterval != nil {
+		if string(p.AutoInterval) == "null" || json.Unmarshal(p.AutoInterval, &autoMinutes) != nil || autoMinutes < 0 || (autoMinutes > 0 && (autoMinutes < 5 || autoMinutes > 1440)) {
+			return response(400, map[string]string{"error": "Invalid auto check interval"})
+		}
+		if p.ClearURL && autoMinutes != 0 {
+			return response(400, map[string]string{"error": "Invalid settings or missing management key"})
+		}
 	}
 	b.life.Lock()
 	defer b.life.Unlock()
@@ -270,6 +304,20 @@ func (b *backend) saveSettings(raw []byte) ([]byte, error) {
 	if key == "" && c.Key == "" {
 		return response(400, map[string]string{"error": "Invalid settings or missing management key"})
 	}
+	nextURL, nextAuto := c.URL, c.AutoIntervalMinutes
+	if p.ClearURL || p.URL != "" {
+		nextURL = p.URL
+	}
+	if p.ClearURL && p.AutoInterval == nil {
+		nextAuto = 0
+	}
+	if p.AutoInterval != nil {
+		nextAuto = autoMinutes
+	}
+	if nextAuto > 0 && nextURL == "" {
+		return response(400, map[string]string{"error": "Invalid or missing Webshare configuration"})
+	}
+	c.URL, c.AutoIntervalMinutes = nextURL, nextAuto
 	if key != "" {
 		endpoint, err := b.endpoint()
 		if err != nil {
@@ -295,9 +343,6 @@ func (b *backend) saveSettings(raw []byte) ([]byte, error) {
 		}
 		c.Key = key
 	}
-	if p.ClearURL || p.URL != "" {
-		c.URL = p.URL
-	}
 	if p.Excludes != nil {
 		c.Excludes = []string{}
 		for _, name := range *p.Excludes {
@@ -310,7 +355,18 @@ func (b *backend) saveSettings(raw []byte) ([]byte, error) {
 		return response(500, map[string]string{"error": "Unable to save plugin settings"})
 	}
 	b.mu.Lock()
+	sc, sd := b.schedCancel, b.schedDone
+	b.schedCancel, b.schedDone = nil, nil
+	if sc != nil {
+		sc()
+	}
+	b.mu.Unlock()
+	if sd != nil {
+		<-sd
+	}
+	b.mu.Lock()
 	defer b.mu.Unlock()
+	b.nextCheckAt = ""
 	b.cfg = c
 	b.assignments = nil
 	b.expires = time.Time{}
@@ -322,6 +378,7 @@ func (b *backend) saveSettings(raw []byte) ([]byte, error) {
 		b.s.Rows, b.s.Summary, b.s.Results = previous.Rows, previous.Summary, previous.Results
 		b.s.Done, b.s.Total = previous.Done, previous.Total
 	}
+	b.startScheduler(b.intervalDuration(c.AutoIntervalMinutes))
 	return response(200, b.s)
 }
 func (b *backend) start() ([]byte, error) {

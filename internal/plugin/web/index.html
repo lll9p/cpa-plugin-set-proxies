@@ -5,6 +5,7 @@
   <div class="csp-status-bar">
     <p id="status" class="csp-status-badge csp-phase-unauth" role="status" aria-live="polite">正在连接管理面板</p>
     <p id="configured" class="csp-meta"></p>
+    <p id="scheduleInfo" class="csp-meta" hidden></p>
   </div>
   <div class="line csp-toolbar-actions">
     <button id="scan" class="csp-btn csp-btn-primary" type="button" disabled>扫描并预览</button>
@@ -39,6 +40,14 @@
     <div class="csp-field">
       <label for="excludes">排除的凭证文件名（每行一个）</label>
       <textarea id="excludes" rows="2" placeholder="example.json" disabled></textarea>
+    </div>
+    <div class="csp-field csp-field-wide">
+      <label for="autoEnabled">定时自动巡检与替换</label>
+      <div class="line csp-auto-row">
+        <label class="csp-check" for="autoEnabled"><input id="autoEnabled" type="checkbox" disabled><span>启用自动模式</span></label>
+        <label class="csp-inline-label" for="autoMinutes">间隔（分钟）</label>
+        <input id="autoMinutes" type="number" min="5" max="1440" step="1" value="10" disabled>
+      </div>
     </div>
   </div>
 </details>

@@ -72,6 +72,10 @@ func (b *backend) runApply(ctx context.Context, items []assignment, endpoint, ke
 		b.cancel = nil
 		close(finished)
 	}()
+	failure = b.applyItems(ctx, items, endpoint, key)
+}
+
+func (b *backend) applyItems(ctx context.Context, items []assignment, endpoint, key string) (failure string) {
 	for _, item := range items {
 		if ctx.Err() != nil {
 			return
@@ -101,6 +105,7 @@ func (b *backend) runApply(ctx context.Context, items []assignment, endpoint, ke
 			return
 		}
 	}
+	return
 }
 
 func (b *backend) patch(endpoint, key string, item assignment) (applyResult, bool) {

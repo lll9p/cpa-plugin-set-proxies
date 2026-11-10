@@ -5,7 +5,7 @@ import vm from 'node:vm';
 
 const source = readFileSync(new URL('./internal/plugin/web/app.js', import.meta.url), 'utf8');
 const base = '/v0/management/plugins/cpa-plugin-set-proxies';
-const initial = () => ({configured:true, management_key_set:true, excludes:['saved.json'], phase:'idle', stage:'', done:0, total:0, summary:{pending:0}, rows:[], results:[]});
+const initial = () => ({configured:true, management_key_set:true, auto_interval_minutes:0, excludes:['saved.json'], phase:'idle', stage:'', done:0, total:0, summary:{pending:0}, rows:[], results:[]});
 const ready = () => ({...initial(), phase:'ready', plan_id:'plan-1', summary:{pending:5}, rows:[{name:'a.json', current_endpoint:'old:80', proposed_endpoint:'new:80', action:'assign', reason:'needs live proxy'}]});
 const pageURL = 'https://cpa.example/v0/resource/plugins/cpa-plugin-set-proxies/ui';
 const userAgent = 'CPA UI tests / 浏览器';
@@ -46,7 +46,7 @@ function harness({storedAuth, location = pageURL} = {}) {
   let nextTimer = 0, nextElement = 0;
   const element = id => {
     if (!elements.has(id)) elements.set(id, {
-      value:'', disabled:false, hidden:false, textContent:'', children:[], open:false, attributes:new Map(),
+      value:'', checked:false, disabled:false, hidden:false, textContent:'', children:[], open:false, attributes:new Map(),
       getAttribute(name) { return this.attributes.get(name) ?? null; },
       setAttribute(name, value) { this.attributes.set(name, String(value)); },
       addEventListener(name, handler) { this[name] = handler; },
@@ -68,7 +68,7 @@ function harness({storedAuth, location = pageURL} = {}) {
   const bridge = {version:1, request:(path, body) => reply(base + path, {method:body === undefined ? 'GET' : 'POST', body:body === undefined ? undefined : JSON.stringify(body)})};
   Object.assign(globals, {
     document:{getElementById:element, createElement:() => element('created-' + ++nextElement)},
-    setTimeout:fn => { const id = ++nextTimer; timers.set(id, fn); return id; },
+    setTimeout:(fn, delay) => { const id = ++nextTimer; fn.delay = delay; timers.set(id, fn); return id; },
     clearTimeout:id => timers.delete(id),
     setInterval:(fn, delay) => { const id = ++nextTimer; intervals.set(id, {fn, delay}); return id; },
     clearInterval:id => intervals.delete(id),
@@ -141,7 +141,7 @@ test('save posts settings and excludes, blank preserves URL, explicit clear, suc
   $('excludes').value = ' a.json \n\n b.json\r\n';
   await $('save').onclick();
   let post = h.requests.find(r => r.path.endsWith('/settings'));
-  assert.deepEqual(JSON.parse(post.body), {webshare_url:'https://example.com/secret', excludes:['a.json', 'b.json'], clear_webshare_url:false});
+  assert.deepEqual(JSON.parse(post.body), {webshare_url:'https://example.com/secret', excludes:['a.json', 'b.json'], clear_webshare_url:false, auto_interval_minutes:0});
   assert.equal($('url').value, '');
   assert.equal($('excludes').value, ' a.json \n\n b.json\r\n');
   await $('save').onclick();
@@ -327,6 +327,24 @@ test('ready plan can be cancelled and cancel immediately explains a pending stop
   assert.equal($('status').textContent, '已取消');
   assert.equal($('cancel').disabled, true);
   assert.equal(h.requests.filter(r => r.path.endsWith('/cancel')).length, 1);
+});
+
+test('completed checks without replacements show a concise count while other states retain statistics', async () => {
+  const h = harness(), $ = h.element;
+  h.state = {...initial(), phase:'completed'};
+  await h.connect();
+  assert.equal($('resultPanel').hidden, false);
+  assert.equal($('counts').textContent, '本轮无需替换代理');
+  h.state.summary.pending = 1;
+  await $('refresh').onclick();
+  assert.equal($('counts').textContent, '已处理 0 · 成功 0 · 冲突 0 · 失败 0 · 不确定 0 · 未处理 1');
+  h.state.summary.pending = 0;
+  h.state.results = [{name:'a.json', status:'success'}];
+  await $('refresh').onclick();
+  assert.equal($('counts').textContent, '已处理 1 · 成功 1 · 冲突 0 · 失败 0 · 不确定 0 · 未处理 0');
+  h.state.results = []; h.state.phase = 'applying';
+  await $('refresh').onclick();
+  assert.equal($('counts').textContent, '已处理 0 · 成功 0 · 冲突 0 · 失败 0 · 不确定 0 · 未处理 0');
 });
 
 test('ready with no pending changes explicitly says no changes and cannot apply an empty plan', async () => {
@@ -877,6 +895,101 @@ for (const storedAuth of ['corrupt', auth('https://foreign.example'), auth('http
   assert.equal(h.element('scan').disabled, true);
   assert.equal(h.storage.raw, storedAuth, 'invalid storage must not be cleared');
   assert.deepEqual(h.storage.writes, []);
+});
+
+test('automatic settings validate intervals and submit only on ordinary saves', async () => {
+  const h = harness(), $ = h.element;
+  await h.connect();
+  assert.equal($('autoMinutes').disabled, true);
+  $('autoEnabled').checked = true; $('autoMinutes').value = '';
+  $('autoEnabled').onchange();
+  assert.equal($('autoMinutes').value, '10');
+  assert.equal($('autoMinutes').disabled, false);
+  for (const value of ['3', '2000', '10.5', '', 'invalid']) {
+    $('autoMinutes').value = value;
+    const before = h.requests.length;
+    await $('save').onclick();
+    assert.equal(h.requests.length, before);
+    assert.match($('status').textContent, /5–1440/);
+  }
+  for (const minutes of [10, 5, 1440, 27, 0]) {
+    $('autoEnabled').checked = minutes > 0;
+    $('autoMinutes').value = String(minutes || 10);
+    h.state.auto_interval_minutes = minutes;
+    await $('save').onclick();
+    assert.equal(JSON.parse(h.requests.filter(r => r.method === 'POST').at(-1).body).auto_interval_minutes, minutes);
+    assert.equal($('autoEnabled').checked, minutes > 0);
+  }
+  $('autoEnabled').checked = true; $('autoMinutes').value = '20';
+  h.state.auto_interval_minutes = 20; await $('save').onclick();
+  $('editKey').onclick(); $('managementKey').value = 'draft-secret';
+  h.state.auto_interval_minutes = 0;
+  await $('clearURL').onclick();
+  assert.deepEqual(JSON.parse(h.requests.filter(r => r.method === 'POST').at(-1).body), {webshare_url:'', excludes:['saved.json'], clear_webshare_url:true});
+  assert.equal($('managementKey').value, 'draft-secret');
+  assert.equal($('autoEnabled').checked, false);
+  assert.equal(h.timers.size, 0);
+});
+
+test('password-only and inline exclusion saves omit automatic interval drafts', async () => {
+  const h = harness(), $ = h.element;
+  h.state.auto_interval_minutes = 10; await h.connect();
+  $('autoEnabled').checked = false; $('autoMinutes').value = '33';
+  $('url').value = 'draft-url';
+  $('editKey').onclick(); $('managementKey').value = 'new-secret';
+  await $('saveKey').onclick();
+  assert.deepEqual(JSON.parse(h.requests.filter(r => r.method === 'POST').at(-1).body), {management_key:'new-secret'});
+  await vm.runInContext("toggleExclude('other.json')", h.context);
+  assert.deepEqual(JSON.parse(h.requests.filter(r => r.method === 'POST').at(-1).body), {excludes:['saved.json', 'other.json']});
+  assert.equal($('autoEnabled').checked, false);
+  assert.equal($('autoMinutes').value, '33');
+  assert.equal($('url').value, 'draft-url');
+});
+
+test('schedule times are formatted safely and disabled schedules retain last check', async () => {
+  const h = harness(), $ = h.element;
+  h.state = {...initial(), auto_interval_minutes:10, last_check_at:'2026-11-10T17:00:00Z', next_check_at:'2026-11-10T17:10:00Z'};
+  await h.connect();
+  assert.equal($('scheduleInfo').hidden, false);
+  const formatted = value => vm.runInContext(`formatTimestamp(${JSON.stringify(value)})`, h.context);
+  assert.equal($('scheduleInfo').textContent, `自动巡检：每 10 分钟 · 上次检查：${formatted(h.state.last_check_at)} · 下次检查：${formatted(h.state.next_check_at)}`);
+  for (const invalid of ['secret<script>', '2026-99-99T17:00:00Z', '2026-11-10', 123, null]) {
+    h.state.last_check_at = invalid; h.state.next_check_at = invalid;
+    await $('refresh').onclick();
+    assert.equal($('scheduleInfo').textContent, '自动巡检：每 10 分钟 · 上次检查：待运行');
+    assert.equal(formatted(invalid), '');
+  }
+  h.state.auto_interval_minutes = 0; h.state.last_check_at = '2026-11-10T17:00:00Z';
+  await $('refresh').onclick();
+  assert.match($('scheduleInfo').textContent, /已关闭 · 上次检查：/);
+  h.state.last_check_at = ''; await $('refresh').onclick();
+  assert.equal($('scheduleInfo').hidden, true);
+  assert.equal($('scheduleInfo').textContent, '');
+});
+
+for (const disconnect of ['detach', '401']) test(`automatic idle polling preserves all drafts and stops on ${disconnect}`, async () => {
+  const h = harness(), $ = h.element;
+  h.state.auto_interval_minutes = 10; await h.connect();
+  assert.equal(h.timers.values().next().value.delay, 15000);
+  $('url').value = 'draft-url'; $('excludes').value = 'draft.json';
+  $('autoMinutes').value = '37';
+  await h.tick();
+  assert.equal($('autoMinutes').value, '37');
+  $('autoEnabled').checked = false; $('autoEnabled').onchange();
+  h.state.auto_interval_minutes = 20; await h.tick();
+  assert.equal($('url').value, 'draft-url');
+  assert.equal($('excludes').value, 'draft.json');
+  assert.equal($('autoEnabled').checked, false);
+  assert.equal($('autoMinutes').value, '37');
+  h.state.phase = 'scanning'; await h.tick();
+  assert.equal(h.timers.values().next().value.delay, 1200);
+  if (disconnect === 'detach') await h.detach();
+  else { h.status = 401; await h.tick(); }
+  assert.equal(h.timers.size, 0);
+  assert.equal($('scheduleInfo').hidden, true);
+  assert.equal($('scheduleInfo').textContent, '');
+  assert.equal($('autoEnabled').checked, false);
+  assert.equal($('autoMinutes').value, '10');
 });
 
 test('outbound CPA authentication errors do not disconnect the panel session', async () => {

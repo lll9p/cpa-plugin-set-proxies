@@ -238,6 +238,35 @@ func (b *backend) run(ctx context.Context, c config, finished chan struct{}) {
 		b.cancel = nil
 		close(finished)
 	}()
+	rows, stats, assignments, scanFailure := b.scanPlan(ctx, c)
+	failure = scanFailure
+	if failure != "" || ctx.Err() != nil {
+		return
+	}
+	var planID string
+	if len(assignments) > 0 {
+		var err error
+		planID, err = id()
+		if err != nil {
+			failure = "Unable to create plan"
+			return
+		}
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if ctx.Err() != nil {
+		return
+	}
+	b.s.Rows = rows
+	b.s.Summary = stats
+	b.s.Phase = "ready"
+	b.s.Stage = "complete"
+	b.s.PlanID = planID
+	b.expires = time.Now().Add(planTTL)
+	b.assignments = assignments
+}
+
+func (b *backend) scanPlan(ctx context.Context, c config) (rows []row, stats summary, assignments []assignment, failure string) {
 	nodes, e := b.fetch(ctx, c.URL)
 	if e != nil {
 		failure = "Proxy download network failed"
@@ -364,10 +393,8 @@ enqueue:
 	}
 	seenPath, seenName := map[string]bool{}, map[string]string{}
 	used := map[string]bool{}
-	var rows []row
-	var assignments []assignment
 	var pending []int
-	stats := summary{Proxies: len(nodes), Alive: len(alive)}
+	stats = summary{Proxies: len(nodes), Alive: len(alive)}
 	for _, f := range listing.Files {
 		if ctx.Err() != nil {
 			return
@@ -469,25 +496,5 @@ enqueue:
 		rows[ri].Proposed = n.endpoint()
 		assignments[i].Proxy = n.URL()
 	}
-	var planID string
-	if len(assignments) > 0 {
-		var err error
-		planID, err = id()
-		if err != nil {
-			failure = "Unable to create plan"
-			return
-		}
-	}
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if ctx.Err() != nil {
-		return
-	}
-	b.s.Rows = rows
-	b.s.Summary = stats
-	b.s.Phase = "ready"
-	b.s.Stage = "complete"
-	b.s.PlanID = planID
-	b.expires = time.Now().Add(planTTL)
-	b.assignments = assignments
+	return
 }

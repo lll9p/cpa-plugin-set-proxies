@@ -19,6 +19,9 @@ func validateSettings(c config) error {
 	if strings.ContainsAny(c.Key, "\r\n") || !validURL(c.URL) {
 		return errors.New("Invalid settings")
 	}
+	if c.AutoIntervalMinutes < 0 || (c.AutoIntervalMinutes > 0 && (c.AutoIntervalMinutes < 5 || c.AutoIntervalMinutes > 1440 || c.URL == "" || c.Key == "")) {
+		return errors.New("Invalid settings")
+	}
 	return nil
 }
 

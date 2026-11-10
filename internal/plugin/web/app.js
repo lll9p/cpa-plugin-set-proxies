@@ -61,6 +61,7 @@ const resultLabels = {success:'成功', conflict:'冲突，未写入', failed:'�
 const hostVars = ['--bg-primary', '--bg-secondary', '--bg-tertiary', '--text-primary', '--text-secondary', '--text-tertiary', '--border-color', '--primary-color'];
 const details = {
   'Invalid JSON':'请求无效，JSON 格式错误。',
+  'Invalid auto check interval':'自动巡检间隔须为 5–1440 分钟，或设为 0 关闭。',
   'Invalid settings or missing management key':'请在设置中填写管理密码并检查下载链接。',
   'Unable to verify CPA management password':'暂时无法验证管理密码，请稍后重试。',
   'Invalid or missing Webshare configuration':'Webshare 下载链接无效或尚未保存。',
@@ -163,6 +164,8 @@ function message(text, phase = authenticated ? (state?.phase || 'idle') : 'unaut
 function controls() {
   const busy = locked || active();
   for (const id of ['url', 'excludes', 'save', 'editKey', 'managementKey', 'saveKey', 'cancelKey']) $(id).disabled = !authenticated || busy;
+  $('autoEnabled').disabled = !authenticated || busy;
+  $('autoMinutes').disabled = !authenticated || busy || !Boolean($('autoEnabled').checked);
   $('keyEditor').hidden = !editingKey;
   $('editKey').hidden = editingKey;
   $('editKey').textContent = state?.management_key_set ? '更换密码' : '设置密码';
@@ -198,6 +201,8 @@ function disconnect(text = '未读取到 CPA 登录信息，请在管理页面�
   $('probeStats').textContent = ''; $('filterCount').textContent = '';
   $('confirm').close();
   $('configured').textContent = '';
+  $('autoEnabled').checked = false; $('autoMinutes').value = '10';
+  $('scheduleInfo').textContent = ''; $('scheduleInfo').hidden = true;
   $('keyStatus').textContent = '待读取';
   $('summary').textContent = ''; $('counts').textContent = '尚未应用';
   $('empty').hidden = false;
@@ -320,7 +325,17 @@ $('emptyReset').onclick = () => {
   if (!authenticated || !state) return;
   filterMode = 'all'; $('search').value = ''; renderPreview(); $('search').focus();
 };
+function formatTimestamp(value) {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/.test(value) || Number.isNaN(Date.parse(value))) return '';
+  return new Intl.DateTimeFormat('zh-CN', {month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', second:'2-digit', hour12:false}).format(new Date(value));
+}
+const autoInterval = value => Number.isInteger(value) && value >= 5 ? value : 0;
+const autoDraft = () => Boolean($('autoEnabled').checked) ? Number($('autoMinutes').value.trim()) : 0;
 function render() {
+  const interval = autoInterval(state.auto_interval_minutes);
+  const lastAt = formatTimestamp(state.last_check_at), nextAt = formatTimestamp(state.next_check_at);
+  $('scheduleInfo').hidden = !(interval > 0 || lastAt);
+  $('scheduleInfo').textContent = interval > 0 || lastAt ? [interval ? `自动巡检：每 ${interval} 分钟` : '自动巡检：已关闭', lastAt ? `上次检查：${lastAt}` : (interval ? '上次检查：待运行' : ''), interval && nextAt ? `下次检查：${nextAt}` : ''].filter(Boolean).join(' · ') : '';
   $('configured').textContent = (state.configured ? '链接已保存' : '未保存下载链接') + ' · ' + (state.management_key_set ? '密码已设置' : '未设置管理密码');
   $('keyStatus').textContent = state.error === 'CPA management authentication failed' ? '需要更新' : state.management_key_set ? '已设置' : '未设置';
   const s = state.summary || {};
@@ -334,7 +349,9 @@ function render() {
   const results = state.results || [];
   $('resultPanel').hidden = !(results.length || state.phase === 'applying' || state.phase === 'completed');
   const count = status => results.filter(result => result.status === status).length;
-  $('counts').textContent = `已处理 ${results.length} · 成功 ${count('success')} · 冲突 ${count('conflict')} · 失败 ${count('failed')} · 不确定 ${count('unknown')} · 未处理 ${Math.max(0, (s.pending || 0) - results.length)}`;
+  $('counts').textContent = state.phase === 'completed' && !results.length && !(s.pending > 0)
+    ? '本轮无需替换代理'
+    : `已处理 ${results.length} · 成功 ${count('success')} · 冲突 ${count('conflict')} · 失败 ${count('failed')} · 不确定 ${count('unknown')} · 未处理 ${Math.max(0, (s.pending || 0) - results.length)}`;
   $('results').replaceChildren();
   for (const result of results) {
     const li = document.createElement('li');
@@ -346,7 +363,7 @@ function render() {
 }
 function poll() {
   clearTimeout(timer);
-  if (authenticated && active()) timer = setTimeout(() => refresh(), 1200);
+  if (authenticated && (active() || autoInterval(state?.auto_interval_minutes))) timer = setTimeout(() => refresh(), active() ? 1200 : 15000);
 }
 async function refresh(initial = false) {
   clearTimeout(timer);
@@ -368,6 +385,13 @@ async function refresh(initial = false) {
         editingKey = true;
         $('settings').open = true;
       }
+    }
+    const savedInterval = autoInterval(state?.auto_interval_minutes);
+    const autoUnchanged = Boolean($('autoEnabled').checked) === (savedInterval > 0) && $('autoMinutes').value === (savedInterval ? String(savedInterval) : '10');
+    if (first || autoUnchanged) {
+      const interval = autoInterval(next.auto_interval_minutes);
+      $('autoEnabled').checked = interval > 0;
+      $('autoMinutes').value = interval ? String(interval) : '10';
     }
     state = next; authenticated = true;
     render();
@@ -422,9 +446,24 @@ $('refresh').onclick = () => refresh();
 function save(clear) {
   if ($('save').disabled || (clear && $('clearURL').disabled)) return;
   const body = {webshare_url:clear ? '' : $('url').value.trim(), excludes:$('excludes').value.split(/\r?\n/).map(x => x.trim()).filter(Boolean), clear_webshare_url:clear};
-  if (!clear && editingKey && $('managementKey').value.trim()) body.management_key = $('managementKey').value.trim();
-  return command('/settings', body, true);
+  if (!clear) {
+    const minutes = autoDraft();
+    if ($('autoEnabled').checked && (!$('autoMinutes').value.trim() || !Number.isInteger(minutes) || minutes < 5 || minutes > 1440)) {
+      message(details['Invalid auto check interval'], 'failed'); return;
+    }
+    body.auto_interval_minutes = minutes;
+    if (editingKey && $('managementKey').value.trim()) body.management_key = $('managementKey').value.trim();
+  }
+  return command('/settings', body, true, () => {
+    state = {...state, auto_interval_minutes:clear ? 0 : body.auto_interval_minutes};
+    $('autoEnabled').checked = !clear && body.auto_interval_minutes > 0;
+    $('autoMinutes').value = !clear && body.auto_interval_minutes ? String(body.auto_interval_minutes) : '10';
+  });
 }
+$('autoEnabled').onchange = () => {
+  if ($('autoEnabled').checked && (!$('autoMinutes').value.trim() || Number($('autoMinutes').value) < 5)) $('autoMinutes').value = '10';
+  controls();
+};
 $('save').onclick = () => save(false);
 $('clearURL').onclick = () => save(true);
 $('editKey').onclick = () => {

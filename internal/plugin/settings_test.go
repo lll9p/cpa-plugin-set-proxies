@@ -51,6 +51,12 @@ func TestInvalidSettings(t *testing.T) {
 	for _, raw := range []string{
 		"{\"management_key\":\"" + secret,
 		`null`, `[]`,
+		`{"auto_interval_minutes":3}`,
+		`{"auto_interval_minutes":-1}`,
+		`{"auto_interval_minutes":1441,"webshare_url":"https://example.com","management_key":"key"}`,
+		`{"auto_interval_minutes":10}`,
+		`{"auto_interval_minutes":10,"webshare_url":"https://example.com"}`,
+		`{"auto_interval_minutes":10,"management_key":"key"}`,
 		`{"webshare_url":"ftp://` + secret + `"}`,
 		`{"webshare_url":"https://` + secret + `@example.com"}`,
 		`{"management_key":"` + secret + `\r\n"}`,
@@ -79,6 +85,12 @@ func TestInvalidSettings(t *testing.T) {
 		{URL: "https://example.com/" + secret + "\n"},
 		{Key: secret + "\r"},
 		{Key: strings.Repeat(secret, maxSettingsSize)},
+		{AutoIntervalMinutes: -1},
+		{AutoIntervalMinutes: 3, URL: "https://example.com", Key: "key"},
+		{AutoIntervalMinutes: 1441, URL: "https://example.com", Key: "key"},
+		{AutoIntervalMinutes: 10},
+		{AutoIntervalMinutes: 10, URL: "https://example.com"},
+		{AutoIntervalMinutes: 10, Key: "key"},
 	} {
 		err := writeSettings(path, c)
 		if err == nil || strings.Contains(err.Error(), secret) {
