@@ -15,7 +15,7 @@ import (
 	"time"
 )
 
-const pluginVersion = "0.0.3"
+const pluginVersion = "0.0.4"
 
 const base = "/v0/management/plugins/cpa-plugin-set-proxies"
 const resource = "/v0/resource/plugins/cpa-plugin-set-proxies/ui"
